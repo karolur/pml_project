@@ -1,0 +1,131 @@
+---
+title: "Practical machine learning project"
+author: "Karol"
+output: html_document
+---
+##Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). The goal of the project is to predict the manner in which they did their exercises. 
+
+## Getting and cleaning data
+```{r,warning=FALSE}
+library(reshape2)
+library(plyr); library(dplyr)
+library(caret)
+#URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+#download.file(URL, destfile = "./train_data.csv", method="curl")
+train <- read.csv("train_data.csv")
+#URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+#download.file(URL, destfile = "./test_data.csv", method="curl")
+test <- read.csv("test_data.csv")
+```
+
+check the general structure of both datasets 
+```{r, results='hide'}
+str(train)
+str(test)
+nrow(train)
+nrow(test)
+```
+Because there are some '' values, the datasets were re-read. A list of the number of NA per each column was also produced to see if we could eliminate some features, additionally  all the columns related to timestamps were deleted as these will not be part of the model. 
+
+```{r}
+train <- read.csv("train_data.csv", na.strings=c("NA","", " "))
+test <- read.csv("test_data.csv", na.strings=c("NA","", " "))
+
+train <- train[, -c(1:7)]
+
+na_count_train <- sapply(train, function(y) sum(is.na(y)))
+na_count_test <- sapply(test, function(y) sum(is.na(y)))
+
+```
+Since no columns have only NA, near zero variance was used converting all values to numeric.
+
+```{r}
+nzv <- nearZeroVar(train, saveMetrics=TRUE)
+train <- train[, !nzv$nzv]
+isnaCol <- sapply(train, function(y) sum(is.na(y))==0)
+train <- train[, isnaCol]
+
+asNumeric <- function(x) as.numeric(as.character(x))
+factorsNumeric <- function(d) {factorCol <- as.vector(sapply(d, is.factor))
+                              factorCol[length(factorCol)] = FALSE
+                              modifyList(d, lapply(d[, factorCol],   
+                                                   asNumeric))}
+train <- factorsNumeric(train)
+features <- names(train[,-length(train)])
+test <- test[,features]
+
+```
+
+
+```{r, echo=FALSE}
+table(train$classe)
+#summary(train)
+```
+
+following [this guide](http://machinelearningmastery.com/feature-selection-with-the-caret-r-package/) on feature selection and random forest. 
+
+Caret uses recursive feature elimination to select the features and build the model. Random forest was chosen.The algorithm fits the model to all predictors and each predictor is ranked using it's importance to the model, then for each top ranked predictors the model is refit and assessted until the better performer is retained. Resampling with cross validation is used to incorporate the variation due to the selection at each iteration. A 10 fold cv is used with random forest (rfFuncs)
+
+```{r}
+set.seed(666)
+inTrain = createDataPartition(train$classe, p = 0.65, list = FALSE)
+train2 = train[inTrain,]
+test2 = train[-inTrain,]
+
+
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(train2[,1:52], train2[,53], sizes=c(1:52), rfeControl=control)
+# summarize the results
+#print(results)
+# list the chosen features
+predictors(results)
+
+#confusion matrix 
+print(results$fit)
+```
+The top 5 predictors are roll_belt, yaw_belt, magnet_dumbbell_z, pitch_belt, magnet_dumbbell_y
+Confusion matrix looks ok in training and now the test set from the training dataset will be used to evaluate the model. Accuracy is 0.99 and specificity and sensitivity are both above 0.90. Estimate of  error rate is 0.56%
+
+```{r}
+pred.test2 <- predict(results$fit, newdata = test2)
+confusionMatrix(pred.test2, test2$classe)
+```
+With the cv test set we calculate the error rate to be 1- 0.9939 = 0.61% 
+
+As observed in the plot after about 20 variables que accuracy is pretty much the same so we will only use the first 20 predictors with a random forest.
+
+##Random forest
+
+```{r}
+x <- results$optVariables[1:20]
+y <- "classe"
+
+mod.rf1 <- train(x = train2[x], y = train2[,y], method = "rf", 
+                 trControl = trainControl(method = "cv", 
+                                          number = 4))
+
+
+pred.rf <- predict(mod.rf1$finalModel, newdata = test2[x])
+confusionMatrix(pred.rf, test2$classe)
+```
+out of sample error for this  random forest is 0.93%
+
+##KNN
+```{r}
+mod.knn = train(x = train2[x], y = train2[,y], method = "knn",
+                 trControl = trainControl(method = "cv", 
+                                          number = 4))
+pred.knn <- predict(mod.knn, newdata = test2[x])
+confusionMatrix(pred.knn, test2$classe)                 
+```
+out of sample error for this  random forest is 6.76%
+So the random forest was chosen.
+
+# Final Prediction 
+```{r,results='hide'}
+pred.final <- predict(mod.rf1$finalModel, newdata = test[x])
+```
